@@ -1,8 +1,10 @@
 use std::{ffi::CString, mem::MaybeUninit, path::Path};
 
-use yarp_sys::{yp_parse, yp_parser_init, yp_parser_t};
+use yarp_sys::{yp_constant_t, yp_parse, yp_parser_init, yp_parser_t};
 
-use crate::{comment::Comment, diagnostic::Diagnostic, list::ListRef};
+use crate::{
+    ast::Ast, comment::Comment, diagnostic::Diagnostic, encoding::Encoding, list::ListRef,
+};
 
 pub struct Parser {
     inner: yp_parser_t,
@@ -13,35 +15,6 @@ pub struct Parser {
 
     // Same with this, if it was given.
     _file_path: Option<CString>,
-}
-
-pub struct ParseResult {
-    ast: (),
-    comments: Vec<Comment>,
-    errors: Vec<Diagnostic>,
-    warnings: Vec<Diagnostic>,
-}
-
-impl ParseResult {
-    pub fn comments(&self) -> &[Comment] {
-        self.comments.as_ref()
-    }
-
-    pub fn errors(&self) -> &[Diagnostic] {
-        self.errors.as_ref()
-    }
-
-    pub fn warnings(&self) -> &[Diagnostic] {
-        self.warnings.as_ref()
-    }
-
-    pub fn is_success(&self) -> bool {
-        self.errors.is_empty()
-    }
-
-    pub fn is_failure(&self) -> bool {
-        !self.is_success()
-    }
 }
 
 impl Parser {
@@ -82,19 +55,27 @@ impl Parser {
 
     pub fn parse(&mut self) -> ParseResult {
         let node = unsafe { yp_parse(&mut self.inner) };
-        dbg!(node.is_null());
-        // TODO: Remove this after we actually use `node`.
-        // unsafe { crate::sys::yp_node_destroy(self.inner.as_ptr(), node) };
+        assert!(!node.is_null(), "Parse result was null");
+
+        let ast = Ast::try_new(self, node).expect("Node wasn't a Program?");
 
         ParseResult {
-            ast: (),
+            ast,
             comments: self.comments(),
             errors: self.errors(),
             warnings: self.warnings(),
         }
     }
 
-    fn comments(&mut self) -> Vec<Comment> {
+    pub(crate) fn inner_mut(&mut self) -> &mut yp_parser_t {
+        &mut self.inner
+    }
+
+    pub(crate) fn encoding(&self) -> Encoding<'_> {
+        Encoding::new(&self.inner.encoding)
+    }
+
+    fn comments(&self) -> Vec<Comment> {
         let c_comment_list = &self.inner.comment_list;
         let comment_list = ListRef::new(c_comment_list);
 
@@ -107,7 +88,7 @@ impl Parser {
             .collect()
     }
 
-    fn errors(&mut self) -> Vec<Diagnostic> {
+    fn errors(&self) -> Vec<Diagnostic> {
         let c_error_list = &self.inner.error_list;
         let error_list = ListRef::new(c_error_list);
 
@@ -120,7 +101,7 @@ impl Parser {
             .collect()
     }
 
-    fn warnings(&mut self) -> Vec<Diagnostic> {
+    fn warnings(&self) -> Vec<Diagnostic> {
         let c_warning_list = &self.inner.warning_list;
         let warning_list = ListRef::new(c_warning_list);
 
@@ -131,6 +112,51 @@ impl Parser {
                 Diagnostic::new(ptr, &self.inner)
             })
             .collect()
+    }
+
+    pub(crate) fn start(&self) -> Option<usize> {
+        unsafe { self.inner.start.as_ref().map(|v| *v as usize) }
+    }
+
+    pub(crate) fn constant_pool(&self) -> &[yp_constant_t] {
+        unsafe {
+            let constants = self.inner.constant_pool.constants;
+
+            if constants.is_null() {
+                return &[];
+            }
+
+            std::slice::from_raw_parts(constants, self.inner.constant_pool.size)
+        }
+    }
+}
+
+pub struct ParseResult<'a> {
+    ast: Ast<'a>,
+    comments: Vec<Comment>,
+    errors: Vec<Diagnostic>,
+    warnings: Vec<Diagnostic>,
+}
+
+impl<'a> ParseResult<'a> {
+    pub fn comments(&self) -> &[Comment] {
+        self.comments.as_ref()
+    }
+
+    pub fn errors(&self) -> &[Diagnostic] {
+        self.errors.as_ref()
+    }
+
+    pub fn warnings(&self) -> &[Diagnostic] {
+        self.warnings.as_ref()
+    }
+
+    pub fn is_success(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    pub fn is_failure(&self) -> bool {
+        !self.is_success()
     }
 }
 
@@ -169,7 +195,7 @@ class Foo; end"
             let comments = result.comments();
 
             assert_eq!(comments.len(), 1);
-            assert_eq!(comments[0].location(), &(0usize..41usize));
+            assert_eq!(comments[0].location().as_range(), &(0usize..41usize));
             assert_eq!(comments[0].type_(), CommentType::Inline);
         }
 

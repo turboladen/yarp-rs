@@ -1,28 +1,31 @@
 use std::{
     fmt::{self, Debug},
-    ops::Range,
     ptr::NonNull,
 };
 
 use yarp_sys::{yp_comment_t, yp_comment_type_t, yp_parser_t};
 
+use crate::location::Location;
+
 pub struct Comment {
     inner: NonNull<yp_comment_t>,
-    location: Range<usize>,
+    location: Location,
 }
 
 impl Comment {
     pub(crate) fn inner_new(inner: NonNull<yp_comment_t>, parser: &yp_parser_t) -> Self {
-        let start = unsafe { inner.as_ref().start }.wrapping_sub(parser.start as usize);
-        let end = unsafe { inner.as_ref().end }.wrapping_sub(parser.start as usize);
+        let location = unsafe {
+            Location::inner_new(
+                inner.as_ref().start,
+                inner.as_ref().end,
+                parser.start as usize,
+            )
+        };
 
-        Self {
-            inner,
-            location: (start as usize)..(end as usize),
-        }
+        Self { inner, location }
     }
 
-    pub fn location(&self) -> &Range<usize> {
+    pub fn location(&self) -> &Location {
         &self.location
     }
 
